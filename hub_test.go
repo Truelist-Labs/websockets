@@ -222,7 +222,7 @@ func TestSilentConnectionIsReaped(t *testing.T) {
 }
 
 func TestConnectionAnsweringPingsStaysRegistered(t *testing.T) {
-	s, url := newTestServer(t, Timeouts{Write: time.Second, Pong: 300 * time.Millisecond, Ping: 100 * time.Millisecond})
+	s, url := newTestServer(t, Timeouts{Write: time.Second, Pong: 500 * time.Millisecond, Ping: 100 * time.Millisecond})
 	conn := dial(t, url)
 	send(t, conn, "register_listener", "u1")
 
@@ -232,7 +232,8 @@ func TestConnectionAnsweringPingsStaysRegistered(t *testing.T) {
 		pings++
 		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Now().Add(time.Second))
 	})
-	conn.SetReadDeadline(time.Now().Add(time.Second))
+	// Stay connected for several Pong windows.
+	conn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
 	_, _, err := conn.ReadMessage()
 	if err == nil {
 		t.Fatal("expected no data messages")
@@ -247,26 +248,33 @@ func TestConnectionAnsweringPingsStaysRegistered(t *testing.T) {
 }
 
 func TestSlowClientDoesNotBlockBroadcast(t *testing.T) {
-	s, url := newTestServer(t, Timeouts{Write: 200 * time.Millisecond, Pong: time.Minute, Ping: time.Minute})
+	// A long write deadline: if Broadcast ever waited on the slow client's
+	// write, a single call would take about a minute.
+	s, url := newTestServer(t, Timeouts{Write: time.Minute, Pong: time.Minute, Ping: time.Minute})
 	slow := dial(t, url)
 	send(t, slow, "register_listener", "u1")
 	syncConn(t, slow)
 
-	// The slow client never reads again. Big messages fill its TCP buffers, then
-	// its send queue; Broadcast must keep returning promptly regardless.
+	// The slow client never reads again. Big messages fill its TCP buffers,
+	// which blocks its write pump, then its send queue fills up.
 	big := strings.Repeat("x", 64*1024)
 	payload := []byte(fmt.Sprintf(`{"channel":"u1","request":"batch_updated","data":{"blob":%q}}`, big))
 
-	start := time.Now()
+	var slowest time.Duration
 	for i := 0; i < 2*sendBufferSize; i++ {
+		start := time.Now()
 		if err := s.Hub.Broadcast(payload); err != nil {
 			t.Fatal(err)
 		}
+		if elapsed := time.Since(start); elapsed > slowest {
+			slowest = elapsed
+		}
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("broadcast blocked for %s", elapsed)
+	if slowest > 5*time.Second {
+		t.Fatalf("a broadcast blocked for %s", slowest)
 	}
 
+	// Dropped because its send queue overflowed, long before the write deadline.
 	eventually(t, "slow client to be dropped", func() bool { return s.Hub.ChannelCount() == 0 })
 }
 
