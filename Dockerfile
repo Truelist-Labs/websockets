@@ -1,6 +1,6 @@
-ARG GO_VERSION=1.14.1
+ARG GO_VERSION=1.27.3
 
-FROM golang:${GO_VERSION}-buster as builder
+FROM golang:${GO_VERSION} AS builder
 
 WORKDIR /src
 
@@ -9,15 +9,13 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 go build \
-    -installsuffix 'static' \
-    -o /app .
+RUN CGO_ENABLED=0 go build -trimpath -o /app .
 
-#COPY --from=builder /user/group /user/passwd /etc/
-#COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-#COPY --from=builder /app /app
+# Static binary on a minimal base: CA certificates and a nonroot user, no shell.
+FROM gcr.io/distroless/static-debian13:nonroot
+
+COPY --from=builder /app /app
 
 EXPOSE 8080
 
 ENTRYPOINT ["/app"]
-

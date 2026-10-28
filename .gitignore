@@ -2,3 +2,5 @@
 deck.md
 build
 vendor/*/
+/ultralist-websockets
+/websockets
